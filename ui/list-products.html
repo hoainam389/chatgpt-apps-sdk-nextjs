@@ -1,0 +1,72 @@
+<div id="root"></div>
+
+<script>
+  /**
+   * UI markup and event handlers
+   */
+  const renderProduct = (product) => {
+    return `
+      <label style="display: block; margin: 8px 0; padding: 8px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer;">
+        <input type="checkbox" name="cart[]" value="${product.priceId}" style="margin-right: 8px;">
+        <strong>${product.name}</strong>
+        ${product.price ? `<span style="margin-left: 8px; color: #666;">$${(product.price / 100).toFixed(2)}</span>` : ''}
+      </label>
+    `;
+  };
+
+  const renderApp = (products) => {
+    const root = document.getElementById("root");
+
+    root.innerHTML = `
+      <div style="font-family: system-ui, -apple-system, sans-serif; padding: 16px;">
+        <h1 style="margin-bottom: 16px;">Select products to purchase</h1>
+        <form onsubmit="handleSubmit(event)" style="display: flex; flex-direction: column;">
+          <div style="margin-bottom: 16px;">
+            ${products.map(renderProduct).join("")}
+          </div>
+          <button type="submit" style="padding: 12px 24px; background-color: #0070f3; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; font-weight: 500;">
+            Buy Selected Products
+          </button>
+        </form>
+      </div>
+    `;
+  };
+
+  /**
+   * Render the list of products from the tool's structuredContent
+   */
+  const handleSetGlobal = (event) => {
+    const { products } = event.detail.globals["toolOutput"] ?? { products: [] };
+    renderApp(products);
+  };
+
+  /**
+   * Handle form submission - call buy-products tool
+   */
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.target);
+    const priceIds = Array.from(formData.values());
+
+    if (priceIds.length === 0) {
+      alert("Please select at least one product");
+      return;
+    }
+
+    try {
+      const { structuredContent } = await window.openai.callTool("buy-products", {
+        priceIds,
+      });
+
+      window.openai.openExternal({ href: structuredContent.checkoutSessionUrl });
+    } catch (error) {
+      console.error("Error creating checkout session:", error);
+      alert("Failed to create checkout session. Please try again.");
+    }
+  };
+
+  window.addEventListener("openai:set_globals", handleSetGlobal, {
+    passive: true,
+  });
+</script>
+
