@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   useWidgetProps,
   useMaxHeight,
@@ -15,6 +15,15 @@ interface Product {
   currency: string;
 }
 
+interface PaymentStatus {
+  sessionId: string;
+  status: 'complete' | 'processing' | 'pending';
+  timestamp: number;
+  customerEmail?: string;
+  amountTotal?: number;
+  currency?: string;
+}
+
 export default function ProductsPage() {
   const toolOutput = useWidgetProps<Record<string, unknown>>();
   const maxHeight = useMaxHeight() ?? undefined;
@@ -24,9 +33,61 @@ export default function ProductsPage() {
   const [selectedPriceIds, setSelectedPriceIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus | null>(null);
+  const [checkoutSessionId, setCheckoutSessionId] = useState<string | null>(null);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Extract products from toolOutput
   const products = (toolOutput?.products as Product[]) || [];
+  
+  // Track initial load state
+  useEffect(() => {
+    if (toolOutput !== null && toolOutput !== undefined) {
+      setIsInitialLoad(false);
+    }
+  }, [toolOutput]);
+
+  // Poll for payment status
+  useEffect(() => {
+    if (!checkoutSessionId) return;
+
+    const checkPaymentStatus = async () => {
+      try {
+        const response = await fetch(
+          `/api/webhooks/stripe?session_id=${checkoutSessionId}`
+        );
+        
+        if (response.ok) {
+          const data: PaymentStatus = await response.json();
+          setPaymentStatus(data);
+
+          // Stop polling if payment is complete
+          if (data.status === 'complete') {
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current);
+              pollingIntervalRef.current = null;
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error checking payment status:", err);
+      }
+    };
+
+    // Check immediately
+    checkPaymentStatus();
+
+    // Then poll every 3 seconds
+    pollingIntervalRef.current = setInterval(checkPaymentStatus, 3000);
+
+    // Cleanup on unmount
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+      }
+    };
+  }, [checkoutSessionId]);
 
   const handleCheckboxChange = (priceId: string, checked: boolean) => {
     setSelectedPriceIds((prev) =>
@@ -54,8 +115,17 @@ export default function ProductsPage() {
 
         // The result should have structuredContent with checkoutSessionUrl
         const checkoutUrl = (result as any)?.structuredContent?.checkoutSessionUrl;
+        const sessionId = (result as any)?.structuredContent?.checkoutSessionId;
         
-        if (checkoutUrl) {
+        if (checkoutUrl && sessionId) {
+          // Store the session ID to start polling
+          setCheckoutSessionId(sessionId);
+          setPaymentStatus({
+            sessionId,
+            status: 'pending',
+            timestamp: Date.now(),
+          });
+          
           window.openai.openExternal({ href: checkoutUrl });
         } else {
           setError("Failed to create checkout session. Please try again.");
@@ -119,6 +189,94 @@ export default function ProductsPage() {
           </p>
         </div>
 
+        {/* Payment Status */}
+        {paymentStatus && (
+          <div
+            className={`w-full border rounded-lg px-4 py-3 ${
+              paymentStatus.status === 'complete'
+                ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+                : paymentStatus.status === 'processing'
+                ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800'
+                : 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800'
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              {paymentStatus.status === 'complete' ? (
+                <svg
+                  className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0"
+                  fill="currentColor"
+                  viewBox="0 0 20 20"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              ) : paymentStatus.status === 'processing' ? (
+                <svg
+                  className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 animate-spin"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  ></circle>
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  ></path>
+                </svg>
+              ) : (
+                <svg
+                  className="w-5 h-5 text-yellow-600 dark:text-yellow-400 flex-shrink-0"
+                  fill="currentColor"
+                  viewBox="0 0 20 20"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a.75.75 0 000 1.5h.253a.25.25 0 01.244.304l-.459 2.066A1.75 1.75 0 0010.747 15H11a.75.75 0 000-1.5h-.253a.25.25 0 01-.244-.304l.459-2.066A1.75 1.75 0 009.253 9H9z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+              )}
+              <div className="flex-1">
+                <p
+                  className={`text-sm font-medium ${
+                    paymentStatus.status === 'complete'
+                      ? 'text-green-900 dark:text-green-100'
+                      : paymentStatus.status === 'processing'
+                      ? 'text-blue-900 dark:text-blue-100'
+                      : 'text-yellow-900 dark:text-yellow-100'
+                  }`}
+                >
+                  {paymentStatus.status === 'complete'
+                    ? '✓ Payment completed successfully!'
+                    : paymentStatus.status === 'processing'
+                    ? 'Processing your payment...'
+                    : 'Waiting for payment...'}
+                </p>
+                {paymentStatus.customerEmail && (
+                  <p className="text-xs opacity-70 mt-1">
+                    Confirmation sent to {paymentStatus.customerEmail}
+                  </p>
+                )}
+                {paymentStatus.amountTotal && paymentStatus.currency && (
+                  <p className="text-xs opacity-70 mt-1">
+                    Amount: {formatPrice(paymentStatus.amountTotal, paymentStatus.currency)}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Error Message */}
         {error && (
           <div className="w-full bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg px-4 py-3">
@@ -142,7 +300,35 @@ export default function ProductsPage() {
         )}
 
         {/* Products List */}
-        {products.length === 0 ? (
+        {isInitialLoad ? (
+          <div className="w-full text-center py-8">
+            <svg
+              className="mx-auto h-12 w-12 opacity-50 animate-spin"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              ></circle>
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              ></path>
+            </svg>
+            <h3 className="mt-2 text-sm font-semibold">
+              Loading products...
+            </h3>
+            <p className="mt-1 text-sm opacity-70">
+              Please wait while we fetch available products
+            </p>
+          </div>
+        ) : products.length === 0 ? (
           <div className="w-full text-center py-8">
             <svg
               className="mx-auto h-12 w-12 opacity-50"
@@ -199,10 +385,29 @@ export default function ProductsPage() {
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={isLoading || selectedPriceIds.length === 0}
+              disabled={
+                isLoading || 
+                selectedPriceIds.length === 0 || 
+                paymentStatus?.status === 'complete'
+              }
               className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {isLoading ? (
+              {paymentStatus?.status === 'complete' ? (
+                <>
+                  <svg
+                    className="w-4 h-4"
+                    fill="currentColor"
+                    viewBox="0 0 20 20"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.857-9.809a.75.75 0 00-1.214-.882l-3.483 4.79-1.88-1.88a.75.75 0 10-1.06 1.061l2.5 2.5a.75.75 0 001.137-.089l4-5.5z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  <span>Payment Completed</span>
+                </>
+              ) : isLoading ? (
                 <>
                   <svg
                     className="animate-spin h-4 w-4"
